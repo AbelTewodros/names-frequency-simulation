@@ -650,7 +650,7 @@ generate_populations <- function(freq.m, N, sizes, blend_perc_seq, fem.names.sou
   
 ```
 
-#Andrew Helper function for shape
+#Helper function for shape
 ```{r}
 knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_chunk$set(warnings = FALSE, message = FALSE, warning=FALSE)
