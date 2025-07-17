@@ -1,0 +1,1107 @@
+---
+title: Analysis for The Statistical Significance of Named Women in the Gospels and
+  Acts
+author: "Anonymous"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '2'
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+# Introduction
+
+Because there is a substantial simulation, the file takes a long time to complete with it.  Therefore, we have set simulation chunks to *include = FALSE*, and included the output from our run with 10,000 replicates in the data using *set.seed(2024)*.  There are also boostrap confidence intervals.  The bootstrap is set to *NREP=10 (or 100)*, in order to run quickly (see *setup* chunk).  It should be noted that the graphical output depends on the bootstrap results, so the Uniform CI will change a little for such runs.  The dataset is loaded in the *setup* chunk.
+
+
+We recommend heavy use of the Table of Contents when viewing the file.
+
+```{r setup, include=FALSE}
+## Set knitr options
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warnings = FALSE, message = FALSE, warning=FALSE)
+
+## Load Packages
+#library(dplyr)
+#library(zipfR) #For the Zipf functions
+
+##Load Ilan male names for one comparison
+#load("~/General Projects/Vandeweghe/Gospels-Acts-Female02.RData")
+
+## Simulation Parameters
+NREP = 10^1 #This is the number of replicates for all Uniform bootstrap tests.
+#nrep = 10^5 #Number of replicates for the simulations
+#They should only be set to 10^5 for the final run.  It dramatically increases the run-time.
+
+set.seed(2024) #Fix the seed, for reproducibility
+```
+
+# Defining functions
+
+## Chi-squared testing function: chi.square()
+This is the same basic function as used in our Male Names paper, with two updates.  First, we revised the *remove* parameter to permit *partial* removal of names.  This was needed for the mixed sample.  Second, we added the calculation of two association statistics: Goodman & Kruskal's gamma, and Kendall's tau-A.  These were used in the simulation.
+
+```{r chisq}
+chi.square <- function(Ilan, Target, breaks = c(1, 5), remove = c(FALSE, TRUE, 'partial'), MAD.RMS = FALSE)
+{  #CHI.SQUARE is the master function which takes the data in case format and runs both a chi-square goodness-of-fit test of Target with the Reference, as well as removes the Target from the Reference and performs a chi-square test of independence between the two.
+  
+  #Label the frequency groups
+  Ilan.name.freq = data.frame(table(Ilan$Name), Category=NA)
+  colnames(Ilan.name.freq) <- c('Name', 'Freq', 'Category')
+  Ilan.name.freq$Category = ifelse(Ilan.name.freq$Freq<=breaks[1], 'F1', Ilan.name.freq$Category)
+  Ilan.name.freq$Category = ifelse(Ilan.name.freq$Freq>breaks[1] & Ilan.name.freq$Freq<=breaks[2], 'F2', Ilan.name.freq$Category)
+  Ilan.name.freq$Category = ifelse(Ilan.name.freq$Freq>breaks[2], 'F3', Ilan.name.freq$Category)
+
+  
+  #Obtain Reference frequencies
+  f.Ilan = Ilan.name.freq %>% 
+    group_by(Category) %>%
+    summarize(Frequency = sum(Freq))
+  
+  #Pull the name lists
+  names.F1 = filter(Ilan.name.freq, Category=='F1')$Name
+  names.F2 = filter(Ilan.name.freq, Category=='F2')$Name
+  names.F3 = filter(Ilan.name.freq, Category=='F3')$Name
+
+  f.Ilan <- (function(m){
+  m$Frequency[is.na(m$Frequency)] <- 1
+  m[order(match(m$Category, c("F1","F2","F3"))), ]
+})(
+  merge(
+    data.frame(Category = c("F1","F2","F3")),
+    f.Ilan,
+    all.x = TRUE
+  )
+)
+  #Cross-check against target
+  #revise col name
+  Tar.name.freq = data.frame(table(Target$Name), Category=NA)
+  colnames(Tar.name.freq) <- c('Name', 'Freq', 'Category')
+  
+  Tar.name.freq$Category = ifelse(is.na(match(Tar.name.freq$Name, names.F1)), Tar.name.freq$Category, 'F1')
+  Tar.name.freq$Category = ifelse(is.na(match(Tar.name.freq$Name, names.F2)), Tar.name.freq$Category, 'F2')
+  Tar.name.freq$Category = ifelse(is.na(match(Tar.name.freq$Name, names.F3)), Tar.name.freq$Category, 'F3')
+  Tar.name.freq$Category = ifelse(is.na(Tar.name.freq$Category), 'F1', Tar.name.freq$Category) #Any missing names go 'rare'=F1
+  
+  #Obtain Target frequencies
+  f.Tar = Tar.name.freq %>% 
+    group_by(Category) %>%
+    summarize(Frequency = sum(Freq))
+  
+  
+  #Ad hoc addition needed for the bootstrap test when small samples occur
+  if(nrow(f.Tar)<3)
+  {
+    f.Tar2 = data.frame(Category = c('F1', 'F2', 'F3'),
+                        Frequency = rep(0, times=3))
+    data = full_join(f.Tar, f.Tar2, by='Category', relationship='many-to-one')
+    data$Category <- factor(data$Category, levels = f.Tar2$Category, ordered=TRUE)
+    ind = order(data$Category)
+    f.Tar2$Frequency = ifelse(is.na(data[ind,]$Frequency.x), 0, data[ind,]$Frequency.x)
+    f.Tar = f.Tar2
+  }
+  
+  ###Goodness-of-fit test (3 cases: no remove & remove & partial remove)
+  # For printing
+  B = breaks
+  breaks2 = c(paste('<=',B[1]), 
+              paste(B[1]+1,'-',B[2]), 
+              paste('>',B[2]))
+  
+  # Case 1: No remove
+  if(remove == FALSE)
+  {
+    out1 = chisq.test(f.Tar$Frequency, p = f.Ilan$Frequency/sum(f.Ilan$Frequency), correct = FALSE)
+    #print(out1)
+    
+    out2 = data.frame(Frequency = breaks2, Reference = f.Ilan$Frequency, Target = f.Tar$Frequency, Expected = out1$expected, ChiSq = (out1$observed - out1$expected)^2 / out1$expected)
+    #print(out2)
+    
+    if(MAD.RMS == TRUE)
+    {
+      out2b = c(MAD = sum(abs(f.Ilan$Frequency[1:3] - rep(sum(f.Ilan$Frequency[1:3])/3, times=3)))/3 ,
+                RMS = sqrt(sum((f.Ilan$Frequency[1:3] - rep(sum(f.Ilan$Frequency[1:3])/3, times=3))^2)) )
+      print(paste('The MAD is', out2b[1], 'The RMS is', out2b[2]) )
+      
+      GKG = GoodmanKruskalGamma(cbind(f.Tar$Frequency, f.Ilan$Frequency[1:3]), conf.level = 0.95)
+      GKG = round(GKG, 3)
+      print(paste('The Goodman-Kruskal Gamma is', GKG[1], 'with a 95% CI of', GKG[2], 'to', GKG[3]) )
+      
+      KTA = KendallTauA(cbind(f.Tar$Frequency, f.Ilan$Frequency[1:3]), conf.level = 0.95)
+      KTA = round(KTA, 3)
+      print(paste('The Kendalls tau-a is', KTA[1], 'with a 95% CI of', KTA[2], 'to', KTA[3]) )
+
+    }#end if
+    
+  }#end if
+  
+  # Case 2: Remove
+  if(remove == TRUE)
+  {
+    #Removal
+    Tar.name.freq$Freq = -Tar.name.freq$Freq #Set to negative to use "sum" function
+    Combined.name.freq = full_join(Ilan.name.freq, Tar.name.freq, by='Name')
+    Freq.reduced = apply(Combined.name.freq[,c(2,4)], MARGIN = 1, sum, na.rm=TRUE) #c(2,3)?
+    Combined.name.freq2 = data.frame(Combined.name.freq, Freq.reduced)
+    
+    # Re-run frequency categories
+    f.Ilan2 = Combined.name.freq2 %>% 
+      group_by(Category.x) %>%
+      summarize(Frequency = sum(Freq.reduced))
+    
+    #Goodness-of-fit
+    out1 = chisq.test(f.Tar$Frequency, p = f.Ilan2$Frequency[1:3]/sum(f.Ilan2$Frequency[1:3]), correct = FALSE)
+    #print(out1)
+    
+    out2 = data.frame(Frequency = breaks2, Reference = f.Ilan2$Frequency[1:3], Target = f.Tar$Frequency, Expected = out1$expected, ChiSq = (out1$observed - out1$expected)^2 / out1$expected)
+    #print(out2)
+    
+    if(MAD.RMS == TRUE)
+    {
+      out2b = c(MAD = sum(abs(f.Ilan2$Frequency[1:3] - rep(sum(f.Ilan2$Frequency[1:3])/3, times=3)))/3 ,
+                RMS = sqrt(sum((f.Ilan2$Frequency[1:3] - rep(sum(f.Ilan2$Frequency[1:3])/3, times=3))^2)) )
+      print(paste('The MAD is', out2b[1], 'The RMS is', out2b[2]) )
+      
+      GKG = GoodmanKruskalGamma(cbind(f.Tar$Frequency, f.Ilan2$Frequency[1:3]), conf.level = 0.95)
+      GKG = round(GKG, 3)
+      print(paste('The Goodman-Kruskal Gamma is', GKG[1], 'with a 95% CI of', GKG[2], 'to', GKG[3]) )
+
+      KTA = KendallTauA(cbind(f.Tar$Frequency, f.Ilan2$Frequency[1:3]), conf.level = 0.95)
+      KTA = round(KTA, 3)
+      print(paste('The Kendalls tau-a is', KTA[1], 'with a 95% CI of', KTA[2], 'to', KTA[3]) )
+
+    }#end if
+    
+  }#end if
+  
+  
+  # Case 3: Partial Remove
+# This was added to deal with partial occurrence of historical characters in Ben Hur and other such documents.
+
+if(remove == 'partial')
+{
+  #Cross-check against target
+  Tar.name.freq.p = data.frame(table(Target$In.Ilan1), Category=NA)
+  colnames(Tar.name.freq.p) <- c('Name', 'Freq', 'Category')
+  
+  Tar.name.freq.p$Category = ifelse(is.na(match(Tar.name.freq.p$Name, names.F1)), Tar.name.freq.p$Category, 'F1')
+  Tar.name.freq.p$Category = ifelse(is.na(match(Tar.name.freq.p$Name, names.F2)), Tar.name.freq.p$Category, 'F2')
+  Tar.name.freq.p$Category = ifelse(is.na(match(Tar.name.freq.p$Name, names.F3)), Tar.name.freq.p$Category, 'F3')
+  Tar.name.freq.p$Category = ifelse(is.na(Tar.name.freq.p$Category), 'F1', Tar.name.freq.p$Category) #Any missing names go 'rare'=F1
+  
+  #Obtain Target frequencies
+  f.Tar.p = Tar.name.freq.p %>% 
+    group_by(Category) %>%
+    summarize(Frequency = sum(Freq))
+  
+  #Removal
+  Tar.name.freq.p$Freq = -Tar.name.freq.p$Freq #Set to negative to use "sum" function
+  Combined.name.freq = full_join(Ilan.name.freq, Tar.name.freq.p, by='Name')
+  Freq.reduced = apply(Combined.name.freq[,c(2,4)], MARGIN = 1, sum, na.rm=TRUE)
+  Combined.name.freq2 = data.frame(Combined.name.freq, Freq.reduced)
+  
+  # Re-run frequency categories for Ilan
+  f.Ilan2 = Combined.name.freq2 %>% 
+    group_by(Category.x) %>%
+    summarize(Frequency = sum(Freq.reduced))
+  
+  #Goodness-of-fit
+  out1 = chisq.test(f.Tar$Frequency, p = f.Ilan2$Frequency[1:3]/sum(f.Ilan2$Frequency[1:3]), correct = FALSE)
+  #print(out1)
+  
+  out2 = data.frame(Frequency = breaks2, Reference = f.Ilan2$Frequency[1:3], Target = f.Tar$Frequency, Expected = out1$expected, ChiSq = (out1$observed - out1$expected)^2 / out1$expected)
+  #print(out2)
+  
+  if(MAD.RMS == TRUE)
+  {
+    out2b = c(MAD = sum(abs(f.Ilan2$Frequency[1:3] - rep(sum(f.Ilan2$Frequency[1:3])/3, times=3)))/3 ,
+              RMS = sqrt(sum((f.Ilan2$Frequency[1:3] - rep(sum(f.Ilan2$Frequency[1:3])/3, times=3))^2)) )
+    print(paste('The MAD is', out2b[1], 'The RMS is', out2b[2]) )
+    
+      GKG = GoodmanKruskalGamma(cbind(f.Tar$Frequency, f.Ilan2$Frequency[1:3]), conf.level = 0.95)
+      GKG = round(GKG, 3)
+      print(paste('The Goodman-Kruskal Gamma is', GKG[1], 'with a 95% CI of', GKG[2], 'to', GKG[3]) )
+      
+      KTA = KendallTauA(cbind(f.Tar$Frequency, f.Ilan2$Frequency[1:3]), conf.level = 0.95)
+      KTA = round(KTA, 3)
+      print(paste('The Kendalls tau-a is', KTA[1], 'with a 95% CI of', KTA[2], 'to', KTA[3]) )
+
+  }#end if
+  
+ }#end if
+
+  
+  ###Test of independence
+  # Case 1: No removal (direct comparison)
+  if(remove == FALSE)
+  {
+    out3 = chisq.test(data.frame(f.Tar$Frequency, f.Ilan$Frequency), correct = FALSE)
+    out4 = data.frame(Frequency = breaks2, Target = f.Tar$Frequency, Reference = f.Ilan$Frequency, Expected = out3$expected, ChiSq = (out3$observed - out3$expected)^2 / out3$expected)
+    
+    #print(out3)
+    return(list(out1, out2, out3, out4))
+  }#end if
+  
+  # Case 2: Removal (Remove Target from Reference)
+  if(remove == TRUE)
+  {
+    out3 = chisq.test(data.frame(f.Tar$Frequency, f.Ilan2$Frequency[1:3]), correct = FALSE)
+    out4 = data.frame(Frequency = breaks2, Target = f.Tar$Frequency, Reference = f.Ilan2$Frequency[1:3], Expected = out3$expected, ChiSq = (out3$observed - out3$expected)^2 / out3$expected)
+    #print(out3)
+    
+    print(paste('There are', -f.Ilan2$Frequency[4], 'names unique to Target that are not in Reference.') )
+    return(list(out1, out2, out3, out4))
+  }#end if
+  
+  # Case 3: Partial Removal (Remove Partial Target from Reference)
+  if(remove == 'partial')
+  {
+    out3 = chisq.test(data.frame(f.Tar$Frequency, f.Ilan2$Frequency[1:3]), correct = FALSE)
+    out4 = data.frame(Frequency = breaks2, Target = f.Tar$Frequency, Reference = f.Ilan2$Frequency[1:3], Expected = out3$expected, ChiSq = (out3$observed - out3$expected)^2 / out3$expected)
+    #print(out3)
+    
+    print(paste('There are', -f.Ilan2$Frequency[4], 'names unique to Target that are not in Reference.') )
+    return(list(out1, out2, out3, out4))
+}#end if
+  
+}#end function
+
+```
+
+
+
+## Functions from DescTools package
+My server had an older version of R/RStudio and wouldn't load the *DescTools* package, therefore I extracted the functions from it and included them here in order to bypass the function load.
+```{r}
+# Define two functions needed from the DescTools package
+ConDisPairs <- function (x) 
+{
+  n <- nrow(x)
+  m <- ncol(x)
+  pi.c <- pi.d <- matrix(0, nrow = n, ncol = m)
+  row.x <- row(x)
+  col.x <- col(x)
+  for (i in 1:n) {
+    for (j in 1:m) {
+      pi.c[i, j] <- sum(x[row.x < i & col.x < j]) + sum(x[row.x > 
+                                                            i & col.x > j])
+      pi.d[i, j] <- sum(x[row.x < i & col.x > j]) + sum(x[row.x > 
+                                                            i & col.x < j])
+    }
+  }
+  C <- sum(pi.c * x)/2
+  D <- sum(pi.d * x)/2
+  return(list(pi.c = pi.c, pi.d = pi.d, C = C, D = D))
+}
+
+
+GoodmanKruskalGamma <- function (x, y = NULL, conf.level = NA, ...) 
+{
+  if (!is.null(y)) 
+    tab <- table(x, y, ...)
+  else tab <- as.table(x)
+  x <- ConDisPairs(tab)
+  psi <- 2 * (x$D * x$pi.c - x$C * x$pi.d)/(x$C + x$D)^2
+  sigma2 <- sum(tab * psi^2) - sum(tab * psi)^2
+  gamma <- (x$C - x$D)/(x$C + x$D)
+  if (is.na(conf.level)) {
+    result <- gamma
+  }
+  else {
+    pr2 <- 1 - (1 - conf.level)/2
+    ci <- qnorm(pr2) * sqrt(sigma2) * c(-1, 1) + gamma
+    result <- c(gamma = gamma, lwr.ci = max(ci[1], -1), upr.ci = min(ci[2], 
+                                                                     1))
+  }
+  return(result)
+}
+
+
+KendallTauA <- function (x, y = NULL, direction = c("row", "column"), conf.level = NA, 
+    ...) 
+{
+    if (!is.null(y)) 
+        tab <- table(x, y, ...)
+    else tab <- as.table(x)
+    x <- ConDisPairs(tab)
+    n <- sum(tab)
+    n0 <- n * (n - 1)/2
+    taua <- (x$C - x$D)/n0
+    Ci <- as.vector((x$pi.c - x$pi.d) * (tab != 0))
+    Ci <- Ci[Ci != 0]
+    C_ <- sum(Ci)/n
+    sigma2 <- 2/(n * (n - 1)) * ((2 * (n - 2))/(n * (n - 1)^2) * 
+        sum((Ci - C_)^2) + 1 - taua^2)
+    if (is.na(conf.level)) {
+        result <- taua
+    }
+    else {
+        pr2 <- 1 - (1 - conf.level)/2
+        ci <- qnorm(pr2) * sqrt(sigma2) * c(-1, 1) + taua
+        result <- c(tau_a = taua, lwr.ci = max(ci[1], -1), upr.ci = min(ci[2], 
+            1))
+    }
+    return(result)
+}
+```
+
+
+# Investigation
+There are several questions that have emerged for me as I have dug deeper into the power analysis.  The first is skepticism regarding the use of the combined sample size when calculating power.  It makes sense, but at the same time, it results in high power even for what I thought was a modest case, e.g. 320 = 341-21.  The second question concerns effect size.  OK, I get large (0.5), medium (0.3), and small (0.1) effect sizes - but what do those mean in our particular case?  What does that alternative distribution look like?
+
+## Investigation into the meaning of effect size for our case
+The effect size is the sum of the squared difference between null and alternative proportions divided by the null.  For our purposes,
+H0: p1 = p2 = p3 = 1/3, because we're using equal proportion bins
+H1: pi != 1/3 for some i
+
+For readers, I note that these are **not** the hypotheses for the chi-square goodness of fit test used in the male names paper.  In that paper, there are 2000+ name occurrences.  Therefore, they assumed it was the ground truth.  That distribution looked like a Pareto distribution.  Here, we do not assume Ilan-1 is the ground truth, what we do is bin the names into 3 bins and check how close the samples are to Ilan.  On what basis do we use this uniform?  On the basis of a binned model.  Since we can control the binning, we choose equal frequency binning, which is elsewhere shown to be statistically optimal.  Additionally, it provides us here with a fixed null hypothesis, which is convenient for our calculations.  This permits us to explore alternative hypotheses in order to estimate a desired effect size, in order to calculate power.  In other words, we are using a binned model, whereas the uniform distribution null hypothesis of GB we critiqued was from an unbinned model.  Additionally, the H0 and H1 **of the population distributions** considered, for this exercise, are arbitrary.  What matters is the differences between H0 and H1, not the shape of H0.  The shape could be different for the demonstration and the same effect size would output as long as the differences were the same.
+
+Below are two sets of types of bins.  The first has one bin "correct" at 1/3, while the other has one bin getting larger and the other smaller such that the sum remains 1.  The first has two bins over 1/3 and the other bin below 1/3, with the differences growing at 0.05 each step.  The effect sizes are calculated for each.
+
+In addition, I have calculated Goodman and Kruskall's gamma (GKG), as well as Kendall's tau-A for each of the cases.  I think GKG is more helpful than Kendall's tau-A in this part.  GKG is a measure of association between two ordinal variables (our data, since the bins are based on name occurrence).  It works for rectangular tables, does not consider ties, is asymmetric, and provides a reasonable range of values in our sample cases, below.  Therefore, we will go with it as a tool for this section (this detail is not discussed in the paper).
+
+#### Cases: One bin 0.33, one large, one small
+Here is the function which calculates effect size, and creates the visual for comparison:
+```{r}
+effect.size.plot <- function(P0 = c(.33, .33, .33),
+                             P1 = c(.35, .30, .33))
+  #Plot to show the visual impression of different effect sizes
+  #effect.size.plot()
+{
+  require(DescTools)
+  ES = sqrt(sum((P1-P0)^2/P0) )
+  ES = round(ES, 3)
+  GKG = GoodmanKruskalGamma(cbind(21*P0, 320*P1), conf.level = 0.95)
+  GKG = round(GKG[1], 3)
+  KTA = KendallTauA(cbind(21*P0, 320*P1), conf.level = 0.95)
+  KTA = round(KTA[1], 3)
+  barplot(rbind(P0, P1), beside=TRUE, col=c('darkgray', 'darkorange'), names.arg=c('p1', 'p2', 'p3'), ylim=c(0, 0.6), 
+  main = paste('Effect Size =', ES, '; gamma =', GKG, '; tau =', KTA) )
+  return(list(ES, GKG, KTA))
+}
+```
+
+
+```{r}
+effect.size.plot(P0 = c(.33, .33, .33), P1 = c(.33, .33, .33))
+effect.size.plot(P0 = c(.33, .33, .33), P1 = c(.37, .30, .33))
+effect.size.plot(P0 = c(.33, .33, .33), P1 = c(.42, .25, .33))
+effect.size.plot(P0 = c(.33, .33, .33), P1 = c(.47, .20, .33))
+effect.size.plot(P0 = c(.33, .33, .33), P1 = c(.52, .15, .33))
+effect.size.plot(P0 = c(.33, .33, .33), P1 = c(.57, .10, .33))
+```
+
+#### Cases: Two large, one small
+```{r}
+effect.size.plot(P0 = c(.33, .33, .33), P1 = c(.33, .33, .33))
+effect.size.plot(P0 = c(.33, .33, .33), P1 = c(.35, .35, .30))
+effect.size.plot(P0 = c(.33, .33, .33), P1 = c(.375, .375, .25))
+effect.size.plot(P0 = c(.33, .33, .33), P1 = c(.40, .40, .20))
+effect.size.plot(P0 = c(.33, .33, .33), P1 = c(.425, .425, .15))
+effect.size.plot(P0 = c(.33, .33, .33), P1 = c(.45, .45, .10))
+```
+
+#### Cases: Dialing in 0.20
+```{r}
+#+0.4, +0.4, -0.8 -> ES=0.155
+effect.size.plot(P0 = c(.33, .33, .34), P1 = c(.37, .37, .27))
+#+0.45, +0.45, -0.9 -> ES=0.190
+effect.size.plot(P0 = c(.33, .33, .34), P1 = c(.375, .375, .25))
+#+0.5, +0.5, -0.10 -> ES=0.211
+effect.size.plot(P0 = c(.33, .33, .34), P1 = c(.38, .38, .24))
+
+#+0.7, -0.7, +0.0 -> ES=0.172
+effect.size.plot(P0 = c(.33, .33, .34), P1 = c(.40, .26, .34))
+#+0.8, -0.8, +0.0 -> ES=0.197
+effect.size.plot(P0 = c(.33, .33, .34), P1 = c(.41, .25, .34))
+
+
+```
+
+Judging by the above plots, we can detect effect sizes in the range of 0.20 with power around 0.90 and up.  This is pretty good power.  This translates to a difference of (+5%, +5%, -10%) in the bins, or (+8%, -8%, +0%) in the bins.  While we could do finer levels of changes, this is fine enough for us to make the kind of broad brush claim in the paper.  There we take the sum of the absolute value of the differences, which is 20% for the first group and 16% for the second group.  In the paper we omit the 16% and just go with the worst case scenario of 20%.  Since there are only 3 bins, this effectively covers the cases, since cases like (+3%, +7%, -10%) will not be much different.
+
+Another observation we can make these effect sizes around 0.20 correspond to Goodman and Kendall's gamma (GKG) around -0.08 to -0.14.  For values below this, the effect size is too small to detect with our sample size.  For values above this, the effect size is large enough to detect with our sample size.  This is a useful rule of thumb for our purposes.  Also, we note that although the effect size of 0.20 turns out to correspond to differences around "20%", as defined above, the 0.20 is not derived from the 20% directly, this is coincidental.
+
+
+# Monte Carlo simulation to verify the calculations of the paper
+Given the sizes of our samples, the vast different possibilities, and the high stakes of the implications, we conducted a Monte Carlo simulation of the phenomena, as a double-check on the methodology employed, as well as an exploration in order to understand the female names distribution better.  The algorithm will be as follows:
+
+1. Select the hypothetical populations for
+   H0: X&Y follow same dist
+   H1: X&Y different dists
+2. Randomly sample a sample of size nx and ny~~341.
+3. Perform the following calculations on the samples, and store in a matrix:
+  a. chi-square test of independence on the samples (p-value)
+  b. Effect size calculation on the samples (effect size = ES)
+  c. Power calculation on the samples and ES (power)
+  d. Goodman and Kruskal's gamma (GKG) on the samples (gamma value)
+  e. Kendall's tau-A on the samples (tau value)
+4. Repeat steps 2 and 3 for nrep times.
+5. Calculate the mean of the p-values, ES, power, GKG, and Kendall's tau-A values.
+
+The fundamental question is: What hypothetical population should be sampled from?  In order to answer this question, we had to do some research.  Following are the key elements which provide the background for the selection of the populations...
+
+## Research Item 1: Zipf-Mandlebrot Distribution 
+After research, I determined that the Zipf distribution is the best distribution to model the female names distribution.  Wikipedia writes, "The distribution of words ranked by their frequency in a random text corpus is approximated by a power-law distribution, known as Zipf's law."
+https://en.wikipedia.org/wiki/Zipf%E2%80%93Mandelbrot_law
+Zipf only has one parameter, the exponent, whereas Zipf-Mandlebrot has two parameters, the exponent and an adjustment parameter.  The two-parameter distribution fits our data better.
+
+Here is some exploration of Zipf-Mandlebrot.
+
+First, here's the best reference I found on explaining its parameterization and how to fit it: https://volweb.utk.edu/~scolli46/zipfmandelbrotmc.html
+
+I experimented with *sads*, *VGAM*, but settled on the *zipfR* package.  None of them had a straightforward sampling function, e.g. rzipf() which sampled from the Zipf-Mandlebrot distribution (they'd do Zipf, but not Z-M with both parameters, at least the way I wanted).  Therefore, I'm fitting the distribution and playing it safe by sampling from it with a multinomial.
+
+Here's the code:
+
+```{r}
+#Run once data is loaded in setup chunk
+# Arrange data
+Ilan.freq.tab = sort(table(Histor_Fem_Names$Name), decreasing=TRUE)
+fem.names = names(Ilan.freq.tab)
+Ilan.freq = spc(Ilan.freq.tab)
+
+# Fit the data (fzm is best from the fit stats and est. size)
+Ilan.freq.m = lnre("fzm", Ilan.freq)
+lnre("fzm", Ilan.freq)  #fzm is best
+lnre("zm", Ilan.freq)
+lnre("gigp", Ilan.freq)
+
+# Examine the fit
+Ilan.freq.spc87 <- lnre.spc(Ilan.freq.m, N=5178, m.max=87) #Key parameter for fitting
+
+plot(Ilan.freq,Ilan.freq.spc87) #Plot of the model
+Ilan.freq.p = Ilan.freq$Vm/sum(Ilan.freq$Vm)
+Ilan.freq.e87 = Ilan.freq.spc87$Vm/sum(Ilan.freq.spc87$Vm)
+cbind(raw = Ilan.freq.p, expected = Ilan.freq.e87) #Compare probability values
+
+# Sample from the distribution
+f = rmultinom(1, size=87, prob=Ilan.freq.e87)
+fem.samp = rep(fem.names, f)
+
+```
+
+As we can see, the Zipf-Mandlebrot distribution is visibly a great fit, and it was tested as superior to the Zipf fit (one parameter only), as well as the Generalized Inverse Gaussian Poisson (GIGP) fit.  Therefore, for the simulation, I attempted to use two different parameterizations of the Zipf-Mandlebrot distribution, as well as the uniform distribution, as the hypothetical populations to sample from.  The reason for the uniform distribution is that it is the most extreme alternative hypothesis, explicitly proposed by Gregor & Blaise (2024), and which we incorporated into our Male Names paper.  It turns out that the I was unable to obtain a satisfactory second Zipf-Mandlebrot distribution.  The fit shown here is very steep (few very high frequency names, and many low frequency), so I wanted a much smoother drop (more high frequency names with a less steep curve).  I could't fit it with Z-M, so I wound up going with a geometric distribution, which gave a better intermediary between Z-M and Uniform (see code).
+
+
+## Research Item 2: Number of names in population
+For the algorithm, what is the appropriate number of name occurrences be for the population?  The research hypothesis is that there is a ground truth of some hundreds of female names, of which Ilan1 should be pretty representative.  Then, Gospels, Josephus, and so on, are much smaller, but were still drawn from that population.  We have 457 male names, but only 87 female names.  It seems likely that there are fewer female names in the population, but 87/457=0.19, is less than one fifth the number of names, which seems low.  But how much bigger should we go?
+
+To begin, I need to have a reasonable multiple of 87 to work with.  Let's start with a graph of male vs. female proportions in Ilan:
+
+```{r}
+x = sort(table(Histor_Fem_Names$Name), decreasing=TRUE)
+y = sort(table(Ilan$name), decreasing=TRUE)
+xp = x/sum(x)
+yp = y/sum(y)
+
+plot(1:length(yp), yp, type='l', col='blue', lwd=2, xlab='Popularity Rank', ylab='Proportion', ylim=c(0, 0.2))
+points(1:length(xp), xp, type='l', col='pink2', lwd=2)
+
+plot(1:length(yp), yp, type='l', col='blue', lwd=2, xlab='Popularity Rank', ylab='Proportion', ylim=c(0, 0.2), xlim=c(0,100))
+lines(1:length(xp), xp, type='l', col='pink2', lwd=2)
+```
+
+It is rather incredible to me that indices 3 and following match between males and females so closely.  In other words, the only substantive difference between the two distributions is that Mariam and Salome are "hyper-popular" compared to Simon and Joseph (top two male names) - and the percent difference in their popularity (21.6%) corresponds with the remaining rare male names from #88 to #457 (23.0%).
+
+```{r}
+sum(xp[1:2]) - sum(yp[1:2]) # 0.2158277
+sum(yp[88:457]) # 0.2302059
+```
+
+This lends support to thinking that there were fewer rare female names, and that even simulating hypothesizing twice the number of name occurrences (87*2 = 174) would be too many.  After speaking with my co-author, his remarks about ancient naming practices, including Ilan's take that they didn't care much about female names, does not dissuade this line of reasoning.
+
+Therefore, for the simulation, in addition to 87, I will use 125% of 87 (109) as what I personally think is a plausible population size, as well as 150% of 87 (130) as a larger population size.
+
+## Simulation Design
+Given the small sample sizes of our targets, as well as the surprisingly low 87 name occurrences, I feel it is important to "map the countour" of the name space, to a reasonable degree, in order to understand it and thereby gain insight into the behavior of our actual samples.  From the above research, we have the following proposed populations to sample from:
+
+1. Name Occurrence sizes: 87, 109, and 130
+2. Hypothetical populations: Zipf-Mandlebrot fit to Ilan-341 (ZM.Ilan), Geometric fit to a less steep curve (ZM.med), and a Uniform distribution (Unif).
+
+For each simulation, we must specify the following:
+
+1. The population distribution, which is the distribution from which we will sample to obtain Y, the reference distribution.
+2. The the distribution from which we will sample to obtain X, the target distribution.
+
+I am going to restrict Y to ZM.Ilan, since it is highly implausible we would observe Ilan-341 if it were otherwise.  This will give 3 cases, one for each occurrence size.  For X, I will use ZM.Ilan, ZM.med, and Unif over all three name occurrence sizes.  This will give us a total of 9 different cases.  Combining these, we will have a total of 27 different combinations to simulate:
+
+
+
+
+### Algorithm and code for the Monte Carlo simulation
+
+1. Select the hypothetical populations for
+   H0: X&Y follow same dist
+   H1: X&Y different dists
+2. Randomly sample a sample of size nx and ny~~341.
+3. Perform the following calculations on the samples, and store in a matrix:
+  a. chi-square test of independence on the samples (p-value)
+  b. Effect size calculation on the samples (effect size = ES)
+  c. Power calculation on the samples and ES (power) 
+  d. Goodman and Kruskal's gamma (GKG) on the samples (gamma value)
+4. Repeat steps 2 and 3 for nrep times.
+5. Calculate the mean of the p-values, ES, power, and GKG values.
+6. Repeat steps 1-5 for the 27 several different combinations
+
+### Helper functions to streamline the distribution setup
+```{r}
+#’ Insert “New” labels into an existing name vector to reach a desired length
+#’
+#’ @param original_names Character vector of existing names (length = base size)
+#’ @param targetSize Integer target length (must be ≥ length(original_names))
+#’ @return Character vector of length targetSize, with “New1”, “New2”, … interleaved
+#’ @examples
+#’   make_names(c("A","B","C"), 5)
+make_names <- function(original_names, targetSize) {
+  n_orig <- length(original_names)
+  n_new  <- targetSize - n_orig
+  # If no padding needed, just return the originals
+  if (n_new <= 0) return(original_names)
+  
+  # Choose equally spaced insertion points between original entries
+  # e.g. if n_orig=87 and n_new=22, seq(1.5,87.5,length.out=22) gives 22 midpoints
+  insert_pos <- round(seq(1.5, n_orig + 0.5, length.out = n_new))
+  new_labels  <- paste0("New", seq_len(n_new))  # “New1”, “New2”, …
+  
+  all_names <- original_names
+  # Insert in reverse order so earlier inserts don’t shift later indices
+  for (i in seq.int(n_new, 1)) {
+    pos <- insert_pos[i]
+    all_names <- append(all_names, new_labels[i], after = pos)
+  }
+  all_names
+}
+
+
+#’ Fit a Zipf–Mandelbrot (LNRE) model and return normalized probabilities
+#’
+#’ @param freq.m   The “m” object used by lnre.spc (frequency-of-frequencies data)
+#’ @param N        The sample size to pass into lnre.spc (e.g. total tokens)
+#’ @param targetSize Maximum rank (m.max) to fit the model to
+#’ @return Numeric vector of length targetSize, summing to 1
+#’ @examples
+#’   fit_freq(Ilan.freq.m, N=5178, targetSize=109)
+fit_freq <- function(freq.m, N, targetSize) {
+  # Fit the LNRE model up to rank = targetSize
+  spc <- lnre.spc(freq.m, N = N, m.max = targetSize)
+  # Normalize the Vm frequencies so they sum to 1
+  prob_vec <- spc$Vm / sum(spc$Vm)
+  prob_vec
+}
+
+
+#’ Generate a list of populations at increasing sizes, each with its own
+#’ probability vector and padded names vector.
+#’
+#’ @param freq.m         Frequency-of-frequencies data for lnre.spc
+#’ @param N              Total sample size (passed to lnre.spc)
+#’ @param original_e     Pre-computed probability vector at the base size
+#’ @param original_names Character vector of names at the base size
+#’ @param base           Starting population size (e.g. 87)
+#’ @param max_size       Final population size to generate (e.g. 130)
+#’ @param step_size      Increment between sizes (e.g. 22 yields 87→109→131)
+#’ @return A named list; each element is a list with `$prob` and `$names`
+#’ @examples
+#’   pops <- generate_populations(Ilan.freq.m, 5178, Ilan.freq.e87, fem.names,
+#’                               base=87, max_size=130, step_size=22)
+generate_populations <- function(freq.m, N, sizes, blend_perc_seq, fem.names.source) {
+  out <- list()
+
+  for (size in sizes) {
+    # Probabilities from Ilan at this size
+    prob_vec <- fit_freq(freq.m, N, size)
+    if (any(is.na(prob_vec)) || sum(prob_vec) <= 0) {
+      warning(paste("Invalid Ilan frequency for size", size))
+      next
+    }
+
+    # Generate a name list of correct length
+    names_vec <- make_names(fem.names.source, size)
+
+    # Geometric and Uniform for blending
+    geo_vec  <- dgeom(0:(size - 1), prob = 0.1)
+    geo_vec  <- geo_vec / sum(geo_vec)
+    unif_vec <- rep(1 / size, size)
+
+    for (b in blend_perc_seq) {
+      bs<-b*100
+      blended <- zm_geo_unif(perc =bs, zm = prob_vec, geo = geo_vec, unif = unif_vec)
+      epsilon <- 1e-5
+      blended <- blended + epsilon
+      
+
+      key <- paste0("size_", size, "_blend_", round(b * 100))
+      out[[key]] <- list(
+        prob = blended,
+        names = names_vec
+      )
+    }
+  }
+
+  return(out)
+}
+
+
+  
+```
+
+#Andrew Helper function for shape
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warnings = FALSE, message = FALSE, warning=FALSE)
+
+## Load Packages
+library(readxl)
+library(dplyr)
+library(pwr)
+#library(DescTools) #For GoodmanKruskalGamma; functions extracted and incorporated
+library(zipfR) #For the Zipf functions
+library(ggplot2)
+library(viridis)
+library(gridExtra)
+library(kableExtra)
+
+##Load names
+#load("C:/Users/kauai/Downloads/Gospels-Acts-Female01.RData")
+
+## Simulation Parameters
+NREP = 10^1 #This is the number of replicates for all Uniform bootstrap tests.
+nrep = 10^1 #Number of replicates for the simulations
+#They should only be set to 10^5 for the final run.  It dramatically increases the run-time.
+
+set.seed(2024) #Fix the seed, for reproducibility```
+
+zm_to_unif <- function(perc, zm, unif) {
+  # Blend the Zipf-Mandelbrot and the uniform together based on the percentage provided
+  newDist <- ((zm) * (1-(perc/100))) + (unif * sum(zm) * (perc/100))
+  
+  return(newDist)
+}
+
+geometric_to_unif <- function(perc, size) {
+  # Make the geometric probability less and less likely
+  newDist <- dgeom(0:(size-1), prob=0.2*(1-(perc/100)))
+  # When it does reach uniform, then the distribution is all 'NaN's, so just set it to be the uniform
+  if(is.nan(newDist[1]))
+  {
+    newDist <- rep(1/size, times=size)
+  }
+  
+  return(newDist)
+}
+
+zm_geo_unif <- function(perc, zm, geo, unif) {
+  # It was easier to just double this to have it be 100% to the halfway when it switches distributions
+  perc <- perc * 2
+  
+  # Blend from ZM to geometric
+  if(perc < 100)
+  {
+    newDist <- ((zm) * (1-(perc/100))) + (geo/sum(geo) * sum(zm) * (perc/100))
+  }
+  # Blend from geometric to uniform
+  else if(perc >= 100 & perc < 200)
+  {
+    newDist <- dgeom(0:(length(zm)-1), prob=0.1*(2-(perc/100)))
+    
+  }
+  # Else it is greater than or equal to 200, so it should just be uniform
+  else
+  {
+    newDist <- unif
+  }
+  
+  return(newDist/sum(newDist))
+  
+}
+```
+
+### Set up the distributions to simulate
+```{r}
+
+# parameters
+
+sizes_first_pass <- c(89, 97, 106, 115, 124, 133)
+blend_perc_seq <- seq(0, 1, by = 0.2)  # 0%, 20%, ..., 100%
+
+pops_first <- generate_populations(
+  freq.m           = Ilan.freq.m, #run lines 1050-1056
+  N                = 5178,
+  sizes            = sizes_first_pass,
+  blend_perc_seq   = blend_perc_seq,
+  fem.names.source = fem.names
+)
+print(pops_first)
+
+
+ZM.blend_list   <- list()
+fem.names_list  <- list()
+
+for (s in sizes_first_pass) {
+  for (b in blend_perc_seq) {
+    blend_label <- paste0("size_", s, "_blend_", round(b * 100))
+    
+    ZM.blend_list[[blend_label]]   <- pops_first[[blend_label]]$prob
+    fem.names_list[[blend_label]]  <- pops_first[[blend_label]]$names
+  }
+}
+
+```
+
+
+
+### Simulation Functions
+# SIMULATION DESIGN OVERVIEW
+ --------------------------
+ This simulation compares sample distributions (X) to fixed reference distributions (Y)
+ to evaluate statistical similarity using metrics like p-value, effect size, power, and ordinal measures.
+
+ X varies by:
+   - sample size: 89, 97, 106, 115, 124, 133
+   - blend level: 0%, 20%, 40%, 60%, 80%, 100% (Ilan → Uniform)
+
+ Y is fixed to:
+   - blend = 0% (pure Ilan structure)
+   - size: 89, 97, 106, 115, 124, 133
+
+# Total comparisons = 6 X sizes × 6 X blends × 6 Y sizes = 216 combinations
+
+# NOTE:
+ A previous version mistakenly looped over Y blends as well, producing 1296 total simulations.
+ This has been corrected. The error did not affect the correctness of the p-values for the intended comparisons,
+ but added redundant data that has since been filtered out.
+
+Each comparison runs 1000 Monte Carlo simulations and stores median values for analysis.
+The result from this simulation is a list of matrices, each with dimensions 5 columns by 3 rows. Each matrix summarizes one comparison between a sample distribution (X) and a reference distribution (Y) across 1000 simulation runs. The rows represent summary statistics: "50%" (median), "2.5%" (lower bound), and "97.5%" (upper bound) of the distribution of results. The columns include five metrics: pvalue (chi-square test), ES (effect size), power (statistical power), GKG (Goodman-Kruskal Gamma), and KTA (Kendall Tau A). Each entry in the list is named using the format "X_size_[X]__blend_[BX]__Y_size_[Y]__blend_[BY]". To access a specific value, for example the median p-value, you can use results_first[["X_size_89_blend_40__Y_size_133_blend_0"]]["pvalue", "50%"].
+
+```{r}
+
+sample.zipfmandelbrot <- function(n=87, freq.e=Ilan.freq.e87, fem.names=fem.names)
+  #Function to sample from the distribution
+  #n = number of name occurrences
+  #freq.e = expected frequencies, or probabilities
+  #fem.names = the list of names for each occurrence
+  #Example: sample.zipfmandelbrot(n=87, freq.e=Ilan.freq.e, fem.names=fem.names)
+{
+  f = rmultinom(1, size=n, prob=freq.e)
+  fem.samp = rep(fem.names, f)
+  fem.samp = data.frame(Name = fem.samp)
+  return(fem.samp)
+}
+
+#k-cluster break
+get.dynamic.breaks <- function(freqs) {
+
+ 
+  # Run K-means clustering with 3 clusters
+  km <- kmeans(freqs, centers = 3)
+  
+  # Get cluster centers and sort them
+  sorted_centers <- sort(km$centers)
+  # Calculate breakpoints as midpoints between the centers
+  break1 <- mean(sorted_centers[1:2])
+  break2 <- mean(sorted_centers[2:3])
+  
+  print(ceiling(c(break1,break2)))
+  # Return the breaks rounded up
+  return(ceiling(c(break1, break2)))
+}
+
+#quantile break
+get.quantile.breaks <- function(freqs) {
+  
+  # Handle empty or constant input
+  if (length(freqs) == 0) {
+    warning("Empty frequency vector.")
+    return(c(1, 2))
+  }
+
+  if (length(unique(freqs)) == 1) {
+    base <- unique(freqs)[1]
+    return(c(base, base + 1))
+  }
+
+  q <- quantile(freqs, probs = c(0.33, 0.66), na.rm = TRUE)
+
+  b1 <- ceiling(q[1])
+  b2 <- ceiling(q[2])
+
+  # Ensure spacing
+  if (b2 <= b1) b2 <- b1 + 1
+
+  return(c(b1, b2))
+}
+
+##equal-width-break
+get.equal.width.breaks <- function(freqs) {
+  min_val <- min(freqs)
+  max_val <- max(freqs)
+  
+  range <- max_val - min_val
+  width <- range / 3
+  
+  break1 <-  width
+  break2 <- 2 * width
+  
+  return(ceiling(c(break1, break2)))
+}
+
+female.names.simulation <- function(freq.X, freq.Y, fem.names.X, fem.names.Y, nrep = 10^2, nx = 21, ny = 320, alpha = 0.05)
+#Primary function for the simulation.  This receives the distributions and then obtains the nrep simulations samples
+  {
+  pvalue = numeric(nrep)
+  ES = numeric(nrep)
+  power = numeric(nrep)
+  GKG = numeric(nrep)
+  KTA = numeric(nrep)
+
+  for(i in 1:nrep) #4. Repeat steps 2 and 3 for nrep times.
+  {
+    # 1. Select the hypothetical populations for H0 and H1
+    # 2. Randomly sample a sample of size nx and ny~~341.
+    X = sample.zipfmandelbrot(n=nx, freq.e=freq.X, fem.names=fem.names.X)
+    Y = sample.zipfmandelbrot(n=ny, freq.e=freq.Y, fem.names=fem.names.Y)
+   
+
+    print(freq.Y)
+    print(table(Y))
+    
+    tab=as.numeric(table(Y))
+    print(tab)
+    
+
+
+    #3. Calculate p-value, ES, power, and GKG
+    out = chi.square(Y, X, breaks =get.dynamic.breaks(tab), remove=FALSE)
+    pvalue[i] = out[[3]]$p.value
+    PX = out[[4]]$Target/nx
+    PY = out[[4]]$Reference/ny
+    safe_div <- ifelse(PY == 0, 0, (PY - PX)^2 / PY)
+    ES[i] = round(sqrt(sum(safe_div)), 3)
+    power[i] = pwr.chisq.test(N=(nx+ny), w=ES[i], df=2, sig.level=alpha)$power
+    GKG[i] = round(GoodmanKruskalGamma(cbind(nx*PX, ny*PY), conf.level = 1-alpha)[1], 3)
+    KTA[i] = round(KendallTauA(cbind(nx*PX, ny*PY), conf.level = 1-alpha)[1], 3)
+  }#end for
+
+#5. Calculate the mean of the p-values, ES, power, and GKG values.
+data = data.frame(pvalue, ES, power, GKG, KTA)
+out0 = t(apply(data, 2, quantile, probs=c(0.50, 0.025, 0.975),na.rm = TRUE))
+
+return(out0) #power is radically skewed, but the rest are OK
+}#end function
+#end for
+
+#5. Calculate the mean of the p-values, ES, power, and GKG values.
+results_first <- list()
+nrep <- 10 # Or higher for final runs
+
+for (x in sizes_first_pass) {
+  for (bx in blend_perc_seq) {
+    blend_label_x <- paste0("size_", x, "_blend_", round(bx * 100))
+    
+    freq.X      <- ZM.blend_list[[blend_label_x]]
+    fem.names.X <- fem.names_list[[blend_label_x]]
+    
+    for (y in sizes_first_pass) {
+        blend_label_y <- paste0("size_", y, "_blend_0")
+
+        freq.Y      <- ZM.blend_list[[blend_label_y]]
+        fem.names.Y <- fem.names_list[[blend_label_y]]
+        
+        # Skip missing data
+        if (is.null(freq.X) || is.null(freq.Y) || is.null(fem.names.X) || is.null(fem.names.Y)) {
+          next
+        }
+
+        if (length(freq.X) != length(fem.names.X) || length(freq.Y) != length(fem.names.Y)) {
+          next
+        }
+
+        test_name <- paste0("X_", blend_label_x, "__Y_", blend_label_y)
+
+        results_first[[test_name]] <- female.names.simulation(
+          freq.X      = freq.X,
+          freq.Y      = freq.Y,
+          fem.names.X = fem.names.X,
+          fem.names.Y = fem.names.Y,
+          nrep        = nrep
+        )
+    }
+  }
+}
+
+
+```
+
+```{r}
+str(results_first)
+```
+
+# SURFACE TABLES FUNCTION OVERVIEW
+#--------------------------------
+ This function extracts and organizes p-value results from the simulation output into structured tables
+ for each fixed reference distribution Y (blend = 0%) at varying Y sample sizes (e.g., 89, 97, ..., 133).
+
+ Each output table has:
+   - Rows = blend levels of X (from 0% to 100%)
+   - Columns = sample sizes of X
+   - Values = median p-values from 1000 simulations comparing X to the fixed Y
+
+ This layout helps visualize how statistical similarity changes as X becomes more uniform
+ and identifies blend + size combinations that best match the real data’s structure.
+
+ IMPORTANLY: This function also filters out and ignores all simulation results where the reference Y
+ has a blend level other than 0% — correcting for a previous mistake that generated 1296 combinations
+ instead of the intended 216. Only valid comparisons to Y_blend = 0 are included in the tables.
+```{r}
+surface.tables.structured <- function(results_list, metric_index = 1) {
+  all_names <- names(results_list)
+
+  # Parse all simulation names
+  parsed <- lapply(all_names, function(nm) {
+    m <- regmatches(nm, regexec("^X_size_([0-9]+)_blend_([0-9]+)__Y_size_([0-9]+)_blend_([0-9]+)$", nm))[[1]]
+    if (length(m) == 5) {
+      list(xsize = as.integer(m[2]),
+           xblend = as.integer(m[3]),
+           ysize = as.integer(m[4]),
+           yblend = as.integer(m[5]),
+           name = nm)
+    } else NULL
+  })
+  parsed <- parsed[!sapply(parsed, is.null)]
+
+  # Define labels
+  x_sizes <- sort(unique(sapply(parsed, function(z) z$xsize)))
+  x_blends <- sort(unique(sapply(parsed, function(z) z$xblend)))
+  y_sizes <- sort(unique(sapply(parsed, function(z) z$ysize)))
+
+  # Map blend levels to names (adjust as needed)
+  blend_labels <- setNames(
+    paste0("Ilan_", x_blends),
+    x_blends
+  )
+
+  out_list <- list()
+
+  for (ys in y_sizes) {
+    mat <- matrix(NA, nrow = length(x_blends), ncol = length(x_sizes))
+    rownames(mat) <- blend_labels
+    colnames(mat) <- x_sizes
+
+    for (ri in seq_along(x_blends)) {
+      for (ci in seq_along(x_sizes)) {
+        key <- paste0("X_size_", x_sizes[ci], "_blend_", x_blends[ri],
+                      "__Y_size_", ys, "_blend_0")  # Only compare to Y_blend = 0
+        if (key %in% names(results_list)) {
+          val <- results_list[[key]][metric_index, "50%"]
+          mat[ri, ci] <- round(val, 3)
+        }
+      }
+    }
+
+    out_list[[paste0("YI", ys)]] <- mat
+  }
+
+  return(out_list)
+}
+
+
+
+```
+
+
+### p-values
+Here are the tables of the median p-values from the simulation. Each table corresponds to a different fixed reference distribution — a pure Ilan distribution (blend = 0) at a specific sample size. For example, the first table uses size 89 as the reference (YI89), the second uses size 97 (YI97), and so on.
+
+Within each table:
+
+The rows represent different blend levels of the test distribution (X), ranging from 0% (pure Ilan) to 100% (fully uniform).
+
+The columns represent different sample sizes for X.
+
+Each cell contains the median p-value from 1000 Monte Carlo simulations comparing that X distribution to the fixed Y reference. The p-value tells us how likely it is that X could have come from the same distribution as Y.
+------------------------------------------------------------------------------------------------------------------
+Here are the tables of the p-values from the simulation.  The first table has the ZM.Ilan distribution with size 87 (YI87).  The second has size 109 (YI109), and the third 130 (YI130).  In an individual table, then, the rows represent the null distribution of GA and the columns represent the sample sizes.  The theory is that the closest match of the real data's statistic to a combination for all three statistics (p-value = 0.2993, GKG = 0.196, and KTA = 0.015) would be evidence that GA is the best fit of that combination, and therefore it represents the reality.  It is a maximum likelihood kind of idea.
+
+```{r}
+st1 <-surface.tables.structured(results_first, metric_index = 1)  # p-value
+st1
+
+```
+
+### Goodman-Kruskal's gamma
+```{r}
+GKG = 0.196
+st4 = surface.tables.structured(results_first,4)
+st4
+
+```
+
+### Kendall's tau-A
+```{r}
+KTA = 0.015
+st5 = surface.tables.structured(results_first,5)
+st5
+
+```
+
+# This section generates line plots of median p-values across blend levels,
+# for each fixed reference Y (blend = 0%). One graph is created per Y sample size,
+# showing how statistical similarity changes as X becomes more uniform.
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Metric index 1 = p-value
+metric_index <- 1
+x_sizes <- c(89, 97, 106, 115, 124, 133)
+blend_levels <- seq(0, 1, by = 0.2)
+y_sizes <- c(89, 97, 106, 115, 124, 133)
+
+# Loop over each Y size and create a plot
+for (y_size in y_sizes) {
+  plot_data <- data.frame()
+
+  for (x_blend in blend_levels) {
+    for (x_size in x_sizes) {
+      
+      key <- paste0("X_size_", x_size, "_blend_", round(x_blend * 100),
+                    "__Y_size_", y_size, "_blend_0")
+      
+      if (key %in% names(results_first)) {
+        val <- results_first[[key]][metric_index, "50%"]
+        plot_data <- rbind(plot_data, data.frame(
+          Blend = x_blend * 100,
+          XSize = as.factor(x_size),
+          PValue = val
+        ))
+      }
+    }
+  }
+
+  # Plot for the current Y size
+  p <- ggplot(plot_data, aes(x = Blend, y = PValue, color = XSize, group = XSize)) +
+    geom_line(size = 1.2) +
+    geom_point(size = 2) +
+    geom_hline(yintercept = 0.05, linetype = "dashed", color = "gray40") +
+    labs(
+      title = paste("P-Values vs. Blend Levels (Reference: Y Size", y_size, "Blend 0)"),
+      x = "X Blend Level (%)",
+      y = "Median P-Value",
+      color = "X Sample Size"
+    ) +
+    theme_minimal(base_size = 14)
+  
+  print(p)  # If running interactively
+  ggsave(paste0("pvalue_blend_curve_Y", y_size, ".png"), p, width = 8, height = 5)
+}
+
+```
+
+#Conclusion
+The results show a clear pattern: from 0% to 60% blend, the p-values remain relatively high, often exceeding 0.3, indicating that distributions with more Ilan structure are statistically similar to the fixed Ilan reference. In contrast, at 80% and especially 100% blend, the p-values drop sharply and stabilize around 0.001 and 0.000, respectively. This suggests that highly uniform distributions are consistently distinguishable from the structured Ilan distribution. This trend is clearly visualized in the graphs above, where we observe a steady decline in p-value as the blend level increases.
