@@ -14,7 +14,6 @@ This repository contains an R-based simulation that explores the distribution of
 ├── /results
 │   └── final\_1000.RData            # 1000-run simulation output
 ├── README.md
-├── LICENSE
 └── .gitignore
 
 ````
@@ -65,12 +64,4 @@ Los Angeles, CA
 Email: [abel.tewodros14@gmail.com](mailto:abel.tewodros14@gmail.com)
 LinkedIn: [https://linkedin.com/in/abel-t-yilma-5841311aa](https://linkedin.com/in/abel-t-yilma-5841311aa)
 
-## License
-
-This project is licensed under the MIT License. See the LICENSE file for details.
-
-```
-
-Let me know if you want the `LICENSE` file next.
-```
 
