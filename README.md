@@ -3,18 +3,7 @@
 
 This repository contains an R-based simulation that explores the distribution of female names in the Gospels and Acts. The goal is to statistically test how name distributions change under blended conditions, using k-means clustering for adaptive binning and p-value analysis. This work was developed in collaboration with Jason Wilson (Department of Math and Computer Science, Biola University) and builds on prior studies published in the *Journal for the Study of the Historical Jesus*.
 
-## Repository Structure
 
-```
-
-.
-├── names\_simulation.R               # Main R script
-├── /data
-│   └── Gospel-Acts-Female02.RData  # Required input data for running simulations
-├── /results
-│   └── final\_1000.RData            # 1000-run simulation output
-├── README.md
-└── .gitignore
 
 ````
 
