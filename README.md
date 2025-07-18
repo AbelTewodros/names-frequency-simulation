@@ -1,7 +1,11 @@
 ```markdown
 # Names Frequency Simulation
 
-This repository contains an R-based simulation that explores the distribution of female names in the Gospels and Acts. The goal is to statistically test how name distributions change \n under blended conditions, using k-means clustering for adaptive binning and p-value analysis. This work was developed in collaboration with Jason Wilson (Department of Math and Computer \nScience, Biola University) and builds on prior studies published in the *Journal for the Study of the Historical Jesus*.
+This repository contains an R-based simulation that explores the distribution of female names in the Gospels and Acts. The goal is to statistically test how name distributions change 
+
+under blended conditions, using k-means clustering for adaptive binning and p-value analysis. This work was developed in collaboration with Jason Wilson (Department of Math and Computer
+
+Science, Biola University) and builds on prior studies published in the *Journal for the Study of the Historical Jesus*.
 
 
 
